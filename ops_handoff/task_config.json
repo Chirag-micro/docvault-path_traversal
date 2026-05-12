@@ -1,0 +1,53 @@
+{
+  "instance_id": "shield__docvault-path_traversal_001",
+  "repo": {
+    "name": "docvault",
+    "image_name": "micro1ai/shield-docvault:path_traversal_001-a1b2c3d",
+    "language": "python",
+    "version": "0.4.2"
+  },
+  "problem_statement_path": "prompt.txt",
+  "golden_patch": "gold_patch.diff",
+  "test_patch": "test_patch.diff",
+  "test_cmd": "python -m pytest tests/test_hidden_b7e2af19_sandbox.py tests/test_template_service.py tests/test_handler.py -v",
+  "FAIL_TO_PASS": [
+    "tests/test_hidden_b7e2af19_sandbox.py::test_sibling_prefix_traversal_blocked_at_service_layer",
+    "tests/test_hidden_b7e2af19_sandbox.py::test_sibling_prefix_traversal_does_not_leak_archive_secret",
+    "tests/test_hidden_b7e2af19_sandbox.py::test_sibling_prefix_traversal_blocked_through_handler",
+    "tests/test_hidden_b7e2af19_sandbox.py::test_sibling_prefix_traversal_with_legacy_archive_file",
+    "tests/test_hidden_b7e2af19_sandbox.py::test_validator_rejects_sibling_prefix_directly"
+  ],
+  "PASS_TO_PASS": [
+    "tests/test_hidden_b7e2af19_sandbox.py::test_validator_accepts_legitimate_template_path",
+    "tests/test_hidden_b7e2af19_sandbox.py::test_regression_render_default_locale_still_works",
+    "tests/test_hidden_b7e2af19_sandbox.py::test_regression_obvious_traversal_still_blocked",
+    "tests/test_template_service.py::test_render_default_locale",
+    "tests/test_template_service.py::test_render_explicit_locale",
+    "tests/test_template_service.py::test_render_welcome_default",
+    "tests/test_template_service.py::test_render_welcome_fr",
+    "tests/test_template_service.py::test_render_unknown_template_404",
+    "tests/test_template_service.py::test_render_invalid_name_rejected",
+    "tests/test_template_service.py::test_render_empty_name_rejected",
+    "tests/test_template_service.py::test_render_missing_locale_file",
+    "tests/test_template_service.py::test_obvious_traversal_blocked",
+    "tests/test_handler.py::test_handler_200_ok",
+    "tests/test_handler.py::test_handler_400_invalid_name",
+    "tests/test_handler.py::test_handler_404_unknown",
+    "tests/test_handler.py::test_handler_explicit_locale"
+  ],
+  "vulnerability": {
+    "cwe_id": "CWE-22",
+    "cwe_name": "Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')",
+    "owasp_top10_2025": "A01:2025 — Broken Access Control",
+    "cvss_v3_severity": "High",
+    "cvss_v3_vector": "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N",
+    "cvss_v3_score": 6.5,
+    "tags": [
+      "path-traversal",
+      "prefix-check-bypass",
+      "sandbox-escape",
+      "sibling-directory",
+      "filesystem"
+    ]
+  }
+}

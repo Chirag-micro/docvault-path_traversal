@@ -1,0 +1,13 @@
+A few customers on the enterprise plan have opened support tickets reporting unexpected behavior when using the document templates feature.
+
+The reports describe two recurring symptoms:
+
+1. Some preview requests for regional template variants return page content that does not match any template the customer has configured. The response is HTTP 200, but the body contains operational-looking snippets rather than normal rendered HTML.
+
+2. A security-focused customer ran a scripted audit against staging and reported that the template preview endpoint can return content that "should not be reachable from a tenant-facing API." They did not share the request that triggered it, and QA has not reproduced it with the standard examples from the docs.
+
+Internal QA has only confirmed that canonical template names and documented regional variants still render correctly, and the existing regression suite continues to pass.
+
+The on-call engineer's preliminary note says the loading pipeline normalizes template paths before reading from disk, so they want another pair of eyes on the full request-to-file flow.
+
+Your task: investigate the document template rendering pipeline, identify why these symptoms are possible, and produce a fix. The repository's existing test suite must continue to pass after your change. Do not modify test files. Keep the public behavior of the render endpoint unchanged for valid inputs.
