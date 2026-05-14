@@ -1,240 +1,67 @@
-================================================================================
 TASK: shield__docvault-path_traversal_001
-CWE-22 Path Traversal via prefix-check sandbox bypass
-================================================================================
+CWE-22 Path Traversal via post-validation legacy fallback
 
+ROOT CAUSE
+==========
 
---------------------------------------------------------------------------------
-1. ATTACK VECTOR
---------------------------------------------------------------------------------
+DocVault validates the primary template path before reading:
 
-The vulnerability lives in the public template-render endpoint:
+    templates/<name>/<locale>.html
 
-        GET /api/v1/templates/render?name=<NAME>&locale=<LOCALE>
+That path is checked with os.path.commonpath, so direct traversal and
+sibling-prefix payloads are rejected. The bug is later in the control
+flow. If the primary file is missing, TemplateRenderService.render()
+calls _legacy_snapshot_path() for locale-like compatibility tokens such
+as:
 
-The `name` parameter is constrained by a strict alphanumeric regex
-(`^[A-Za-z0-9_\-]+$`) and is additionally cross-checked against the
-in-memory template registry, so the attacker cannot directly inject
-traversal sequences through it.
+    legacy.2024.q3.locale_snapshot.preprod
 
-The `locale` parameter, however, is matched against a permissive
-regex (`^[A-Za-z0-9_.\-/]+$`) that intentionally allows dots and
-slashes, because legitimate locale codes use those characters.  This
-permissiveness is fine **only if** the downstream sandbox check is
-correct.  It is not.
+The helper converts that token into:
 
-The path is composed in `TemplateRenderService._compose_path` as:
+    templates_archive/retention/2024/q3/locale_snapshot.preprod.html
 
-        <data_dir>/templates/<name>/<locale>.html
+and the service opens the fallback path without applying the sandbox
+predicate to that final path. The code therefore validates one path but
+reads another.
 
-then normalized via `os.path.normpath(os.path.abspath(...))` and
-finally validated by `TemplateRenderService._validate_in_sandbox`,
-which compares the resolved path to `self._settings.templates_dir`
-using `str.startswith`.
+EXPLOIT
+=======
 
-The exploit:
+Request:
 
-    GET /api/v1/templates/render
-        ?name=invoice
-        &locale=../../templates_archive/retention/2024/q3/locale_snapshot.preprod
+    name=invoice
+    locale=legacy.2024.q3.locale_snapshot.preprod
 
-Step-by-step:
+Flow:
 
-    1. Composed path:
-         /app/data/templates/invoice/../../templates_archive/retention/2024/q3/locale_snapshot.preprod.html
-    2. After normpath/abspath:
-         /app/data/templates_archive/retention/2024/q3/locale_snapshot.preprod.html
-    3. Sandbox check:
-         "/app/data/templates_archive/retention/2024/q3/locale_snapshot.preprod.html"
-            .startswith("/app/data/templates")              ==>  TRUE
-       The check passes because the sibling directory's name
-       (`templates_archive`) shares the textual prefix `templates`
-       with the sandbox root, and the comparison string has no
-       trailing path separator.
-    4. FileLoader.read returns the bytes of the archive file.
-    5. The handler returns HTTP 200 with the archive content as the
-       response body — leaking the internal credentials embedded
-       there.
+1. The locale regex accepts the value because it contains only
+   alphanumeric characters, dots, underscores, and hyphens.
+2. The primary path resolves under templates/invoice and passes
+   _validate_in_sandbox().
+3. The primary read misses because there is no active template with
+   that locale token.
+4. The legacy fallback maps the token to templates_archive/retention.
+5. FileLoader.read() returns archive bytes from outside the public
+   template sandbox.
 
-Confidentiality impact is HIGH; integrity and availability are not
-directly affected.  The attacker only needs an authenticated tenant
-session — the same level of access required to use the legitimate
-endpoint — so privileges-required is Low.  This yields a CVSS:3.1
-base score of 6.5 (Medium severity band).
+FIX
+===
 
+Validate every path immediately before it can be read. The minimal fix
+is to apply _validate_in_sandbox() to fallback_path before passing it to
+FileLoader.read():
 
---------------------------------------------------------------------------------
-2. ROOT CAUSE
---------------------------------------------------------------------------------
+    if not self._validate_in_sandbox(fallback_path):
+        raise TemplateAccessDenied(fallback_path)
 
-A single defect: `_validate_in_sandbox` performs a textual prefix
-comparison instead of a path-component comparison.
+This preserves valid template behavior, keeps missing non-legacy
+locales as TemplateNotFoundError, and blocks archive reads through the
+tenant-facing render API.
 
-    def _validate_in_sandbox(self, absolute_path: str) -> bool:
-        sandbox_root = self._settings.templates_dir       # no trailing sep
-        candidate = os.path.abspath(absolute_path)
-        return candidate.startswith(sandbox_root)         # ⚠ string-level
+WHY THIS IS HARDER
+==================
 
-`str.startswith` operates on raw bytes and therefore considers
-`/app/data/templates_archive/x` to be a child of `/app/data/templates`
-because the strings share a textual prefix, even though they are in
-**sibling** directories on disk.
-
-Two co-conspiring conditions are required for the bug to be
-exploitable:
-
-  (a) The sandbox-root string in `Settings.templates_dir` is
-      computed via `os.path.join(self.data_dir, "templates")`, which
-      produces a path **without** a trailing separator.  A defensive
-      programmer would either always append `os.sep` before
-      comparison or use a path-aware predicate.
-
-  (b) A real sibling directory (`templates_archive`) exists on disk
-      and contains content that the application explicitly does not
-      want to serve.  In DocVault this directory holds historical
-      template snapshots used by the audit pipeline.  Because the
-      directory name shares the prefix `templates`, every file in it
-      is reachable through the bypass.
-
-The defect is multi-step in the sense that it requires the agent to
-reason across three files:
-
-  - `app/core/config.py`        — to see how `templates_dir` is built
-                                   and notice the missing trailing
-                                   separator.
-  - `app/services/template_service.py`
-                                  — where the flawed predicate lives.
-  - `app/models/template.py` and the on-disk layout under `data/`
-                                  — to realize there is a sibling
-                                   directory that the prefix check
-                                   actually allows.
-
-Pattern-matching only on `_validate_in_sandbox` is not enough — the
-fix must be expressed in terms of the actual filesystem hierarchy,
-which means the agent has to reconstruct the data-flow from request
-parameter to filesystem read.
-
-
---------------------------------------------------------------------------------
-3. FIX RATIONALE
---------------------------------------------------------------------------------
-
-Replace the prefix-string comparison with a path-component-aware
-check based on `os.path.commonpath`:
-
-    sandbox_root = self._settings.templates_dir
-    candidate    = os.path.abspath(absolute_path)
-    try:
-        common = os.path.commonpath([sandbox_root, candidate])
-    except ValueError:
-        return False
-    return common == sandbox_root
-
-Why this fix is correct:
-
-  * `os.path.commonpath` operates on path *components*, not raw
-    strings.  For the sibling case
-    `commonpath(["/app/data/templates", "/app/data/templates_archive/x.html"])`
-    returns `/app/data`, which is **not equal** to the sandbox root,
-    so the check correctly returns False.
-
-  * For legitimate inputs such as
-    `/app/data/templates/invoice/en_US.html` the function returns
-    exactly `/app/data/templates`, so legitimate renders continue to
-    work.
-
-  * The `try/except ValueError` guards against the two edge cases
-    that `commonpath` rejects: paths on different Windows drives,
-    and an empty path string.  In both cases the candidate is
-    obviously not inside the sandbox, so we return False.
-
-Why this fix is preferred over alternatives:
-
-  * It is a one-method change with no public API impact.
-  * It is portable — `os.path.commonpath` is in the stdlib since
-    Python 3.4 and behaves correctly on POSIX and Windows.
-  * It does not depend on the caller pre-resolving symlinks, so it
-    composes cleanly with the existing `_compose_path`.
-  * It does not introduce new I/O (no extra `os.stat`/`os.realpath`
-    calls per request), so render latency is unchanged.
-
-Patch surface:
-
-  * `app/services/template_service.py`  — body of `_validate_in_sandbox`
-                                          and its docstring updated to
-                                          explain the rationale.
-  * No changes to tests, configuration, models, storage, or the
-    handler layer.
-
-
---------------------------------------------------------------------------------
-4. ALTERNATIVES CONSIDERED (and why they are wrong / insufficient)
---------------------------------------------------------------------------------
-
-Alt-A — Append a trailing separator to the sandbox root, then keep
-        the `startswith` check:
-
-            sandbox_root = self._settings.templates_dir + os.sep
-            return candidate.startswith(sandbox_root)
-
-        Rejected.  This *does* fix the sibling-prefix exploit, but it
-        introduces a new edge case: a request that resolves to
-        exactly the sandbox-root directory itself (no trailing slash)
-        is now rejected.  More importantly, it leaves the predicate
-        as a string-level operation; on case-insensitive filesystems
-        (macOS HFS+, Windows NTFS) the agent's reasoning still
-        depends on bytewise equality, which is fragile.  A grader
-        that evaluates predicate behavior on a path equal to the
-        sandbox root will mark this fix as broken.
-
-Alt-B — Tighten the locale regex to forbid `..` and `/`:
-
-            _LOCALE_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")  # no slash
-
-        Rejected.  This is "defense in depth" rather than an actual
-        fix.  It blocks the *current* exploit vector but leaves the
-        broken `_validate_in_sandbox` predicate in place, ready to
-        be re-exploited the next time a developer routes another
-        user-controlled string into a path.  It also breaks
-        legitimate locale codes that contain a slash (e.g. legacy
-        BCP-47 variants stored as `zh-Hant/TW`), regressing the
-        documented public behavior.
-
-Alt-C — Switch to `os.path.realpath` and re-check `startswith`:
-
-            real = os.path.realpath(absolute_path)
-            return real.startswith(self._settings.templates_dir)
-
-        Rejected.  `realpath` resolves symlinks but does not change
-        the underlying string-prefix comparison, so the sibling
-        directory `templates_archive` still passes the check.  This
-        alternative is a textbook example of "doing more I/O without
-        addressing the actual defect."
-
-Alt-D — Reject any user-supplied locale that contains `..` after
-        normalization:
-
-            if ".." in os.path.normpath(locale).split(os.sep):
-                raise InvalidTemplateRequest(...)
-
-        Rejected.  Same drawback as Alt-B: it is a band-aid on the
-        input layer that leaves the broken sandbox predicate intact.
-        Worse, it gives a false sense of security — a future code
-        path that builds a filesystem path from a different source
-        (e.g. a cached "template alias" stored in the database) will
-        bypass this input filter entirely while still hitting the
-        same broken `_validate_in_sandbox`.
-
-Alt-E — Drop the sandbox check entirely and rely on the regex
-        validation of `name` and `locale`:
-
-        Rejected.  This is what the original developer mentally
-        assumed when they "looked safe on review" — but the regex
-        was never sufficient because it allows `/` in locales by
-        design.  Removing the predicate makes the bug strictly
-        worse.
-
-The correct fix is Alt-CORRECT (the gold patch above): replace the
-predicate with a path-component-aware comparison that cannot be
-fooled by sibling directories whose names share a textual prefix
-with the sandbox root.
+The exploit does not contain "../" and the visible sandbox predicate is
+not the vulnerable primitive. Successful agents must trace the late
+fallback branch and compare the validated path with the path that is
+actually opened.

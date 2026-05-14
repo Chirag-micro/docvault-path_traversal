@@ -8,6 +8,6 @@ The reports describe two recurring symptoms:
 
 Internal QA has only confirmed that canonical template names and documented regional variants still render correctly, and the existing regression suite continues to pass.
 
-The on-call engineer's preliminary note says the loading pipeline normalizes template paths before reading from disk, so they want another pair of eyes on the full request-to-file flow.
+The on-call engineer's preliminary note says the obvious traversal probes are blocked and the loading pipeline normalizes template paths before reading from disk, so they want another pair of eyes on the full request-to-file flow, including any compatibility paths used after a primary lookup misses.
 
 Your task: investigate the document template rendering pipeline, identify why these symptoms are possible, and produce a fix. The repository's existing test suite must continue to pass after your change. Do not modify test files. Keep the public behavior of the render endpoint unchanged for valid inputs.

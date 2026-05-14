@@ -1,33 +1,13 @@
 diff --git a/app/services/template_service.py b/app/services/template_service.py
-index 6590ecd..d265c6c 100644
+index 5a0f4b7..8c7d3ef 100644
 --- a/app/services/template_service.py
 +++ b/app/services/template_service.py
-@@ -109,14 +109,20 @@ class TemplateRenderService:
-     def _validate_in_sandbox(self, absolute_path: str) -> bool:
-         """Return True iff ``absolute_path`` lives under the templates root.
+@@ -86,6 +86,8 @@ class TemplateRenderService:
+             fallback_path = self._legacy_snapshot_path(effective_locale)
+             if fallback_path is None:
+                 raise
++            if not self._validate_in_sandbox(fallback_path):
++                raise TemplateAccessDenied(fallback_path)
+             return self._loader.read(fallback_path)
  
--        The check normalizes the candidate to an absolute path and
--        verifies it is prefixed by the configured templates directory.
--        Any traversal attempt that escapes the sandbox produces a path
--        that does not share the prefix and is rejected.
-+        We compare directories using :func:`os.path.commonpath` rather
-+        than a string prefix check, because a string prefix check would
-+        consider ``/app/data/templates_archive/x.html`` to be inside
-+        ``/app/data/templates`` simply because the strings share a
-+        textual prefix.  ``commonpath`` operates on path *components*
-+        and is therefore not fooled by sibling directories whose names
-+        share a prefix with the sandbox root.
-         """
-         sandbox_root = self._settings.templates_dir
--        # Both sides are already absolute; abspath is a no-op but kept
--        # for defensive symmetry in case a future caller passes a
--        # relative path.
-         candidate = os.path.abspath(absolute_path)
--        return candidate.startswith(sandbox_root)
-+        try:
-+            common = os.path.commonpath([sandbox_root, candidate])
-+        except ValueError:
-+            # Different drives on Windows, or an empty path — either
-+            # way the candidate is not inside the sandbox.
-+            return False
-+        return common == sandbox_root
+     # ------------------------------------------------------------------

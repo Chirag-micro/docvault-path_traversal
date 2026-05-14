@@ -21,15 +21,34 @@ RUN git config --global user.email "test@test.com" && \
 COPY repo/ /repo/
 
 # ---------------------------------------------------------------------------
-# Anti-cheating: hide the security test file BEFORE squashing history,
-# so it is completely absent from the git index that the agent sees.
-# It will be re-introduced at evaluation time via test_patch.diff.
+# Anti-cheating: remove hidden/eval/task artifacts BEFORE squashing history,
+# so they are completely absent from the git index that the agent sees.
+# Hidden tests will be re-introduced at evaluation time via test_patch.diff.
 # ---------------------------------------------------------------------------
-RUN rm -f /repo/tests/test_hidden_b7e2af19_sandbox.py
-
-# Install the project so `app.*` imports resolve.
-RUN pip install --no-cache-dir -e . && \
-    pip install --no-cache-dir pytest
+RUN find /repo -type f \( \
+        -name "test_hidden_*.py" -o \
+        -name "*hidden*.py" -o \
+        -name "*eval*.py" -o \
+        -name "*grader*.py" -o \
+        -name "gold_patch.diff" -o \
+        -name "test_patch.diff" -o \
+        -name "task_config.json" -o \
+        -name "reward_spec.md" -o \
+        -name "prompt.txt" -o \
+        -name "reasoning.txt" -o \
+        -name "rubric.md" -o \
+        -name "run_tests.sh" -o \
+        -name "environment_interface.md" \
+    \) -delete && \
+    find /repo -type d \( \
+        -name "__pycache__" -o \
+        -name ".pytest_cache" -o \
+        -name "*.egg-info" -o \
+        -name "annotations" -o \
+        -name "grader" -o \
+        -name "reviews" -o \
+        -name "ops_handoff" \
+    \) -prune -exec rm -rf {} +
 
 # ---------------------------------------------------------------------------
 # Anti-cheating: wipe any inherited git history and re-initialize as a
@@ -45,6 +64,12 @@ RUN rm -rf .git && \
     rm -rf .git/refs/remotes .git/logs && \
     git reflog expire --expire=now --all && \
     git gc --prune=now --aggressive --quiet
+
+# Install the project after the synthetic commit so generated metadata
+# cannot be included in the committed repository snapshot.
+RUN pip install --no-cache-dir -e . && \
+    pip install --no-cache-dir pytest && \
+    find /repo -maxdepth 1 -type d -name "*.egg-info" -prune -exec rm -rf {} +
 
 # Sanity check at build time: existing regression suite must pass on the
 # vulnerable state (the seeded flaw is functionally silent).

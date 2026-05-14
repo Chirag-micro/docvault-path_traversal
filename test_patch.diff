@@ -3,16 +3,15 @@ new file mode 100644
 index 0000000..1111111
 --- /dev/null
 +++ b/tests/test_hidden_b7e2af19_sandbox.py
-@@ -0,0 +1,166 @@
-+"""Hidden security tests for the template render sandbox.
+@@ -0,0 +1,151 @@
++"""Hidden security tests for late legacy-path sandbox enforcement.
 +
-+These tests must FAIL on the vulnerable codebase and PASS once the
-+sandbox boundary check is fixed.  They are not part of the public
-+regression suite — they are injected at evaluation time.
++These tests must FAIL on the vulnerable codebase and PASS once every
++filesystem path that can be read is checked against the public template
++sandbox.  They are injected at evaluation time.
 +"""
 +from __future__ import annotations
 +
-+import os
 +from pathlib import Path
 +
 +import pytest
@@ -25,13 +24,17 @@ index 0000000..1111111
 +
 +@pytest.fixture
 +def hardened_settings(monkeypatch, tmp_path: Path):
-+    """Build a fresh data tree with a known archive secret."""
++    """Build a fresh data tree with active templates and archive canaries."""
 +    data = tmp_path / "data"
 +    (data / "templates" / "invoice").mkdir(parents=True)
 +    (data / "templates" / "welcome").mkdir(parents=True)
-+    (data / "templates_archive").mkdir(parents=True)
++    (data / "templates_archive" / "retention" / "2024" / "q3").mkdir(
++        parents=True
++    )
++    (data / "templates_archive" / "retention" / "2021" / "q4").mkdir(
++        parents=True
++    )
 +
-+    # Canonical templates so the regression path keeps working
 +    (data / "templates" / "invoice" / "en_US.html").write_text(
 +        "<h1>Invoice {{ invoice_number }}</h1>"
 +    )
@@ -39,12 +42,10 @@ index 0000000..1111111
 +        "<h1>Welcome, {{ user_name }}!</h1>"
 +    )
 +
-+    # The forbidden archive contents — these must never reach the
-+    # render endpoint regardless of what the caller does.
-+    (data / "templates_archive" / "internal_secret.html").write_text(
++    (data / "templates_archive" / "retention" / "2024" / "q3" / "locale_snapshot.preprod.html").write_text(
 +        "DOCVAULT_INTERNAL_TOKEN=tk_b7e2af19_canary_value"
 +    )
-+    (data / "templates_archive" / "legacy_invoice.html").write_text(
++    (data / "templates_archive" / "retention" / "2021" / "q4" / "invoice_migration_v1.mailer.html").write_text(
 +        "ARCHIVED_DB_DSN=postgresql://hidden:canary@db.internal/docvault"
 +    )
 +
@@ -55,109 +56,88 @@ index 0000000..1111111
 +
 +
 +# ---------------------------------------------------------------------------
-+# FAIL_TO_PASS — vulnerability tests
++# FAIL_TO_PASS - vulnerability tests
 +# ---------------------------------------------------------------------------
 +
-+def test_sibling_prefix_traversal_blocked_at_service_layer(hardened_settings):
-+    """Sibling directories sharing a textual prefix with the sandbox root
-+    must NOT be reachable through the render service.
++def test_legacy_snapshot_fallback_revalidates_final_path(hardened_settings):
++    """A compact legacy token must not bypass sandbox enforcement.
 +
-+    On the vulnerable codebase the sandbox check uses a plain
-+    ``startswith`` comparison against ``/.../templates`` (no trailing
-+    separator) and therefore accepts ``/.../templates_archive/...``.
-+    The service must raise :class:`TemplateAccessDenied` (or, at worst,
-+    :class:`TemplateNotFoundError` if the file does not exist) — never
-+    return the archive content.
++    The primary composed path is inside ``templates/invoice`` and passes
++    validation, but the compatibility fallback rewrites it to
++    ``templates_archive/retention/...`` after the first read misses.
++    Secure code must validate that final fallback path before opening it.
 +    """
 +    svc = TemplateRenderService(settings=hardened_settings)
++
 +    with pytest.raises((TemplateAccessDenied, TemplateNotFoundError)):
 +        svc.render(
 +            name="invoice",
-+            locale="../../templates_archive/internal_secret",
++            locale="legacy.2024.q3.locale_snapshot.preprod",
 +        )
 +
 +
-+def test_sibling_prefix_traversal_does_not_leak_archive_secret(
-+    hardened_settings,
-+):
-+    """Even if the underlying file lookup somehow succeeds, the canary
-+    string from the archive must never appear in the response body."""
++def test_legacy_snapshot_body_never_leaks_canary(hardened_settings):
 +    svc = TemplateRenderService(settings=hardened_settings)
++
 +    try:
 +        body = svc.render(
 +            name="invoice",
-+            locale="../../templates_archive/internal_secret",
++            locale="legacy.2024.q3.locale_snapshot.preprod",
 +        )
 +    except (TemplateAccessDenied, TemplateNotFoundError):
-+        return  # secure path
++        return
++
 +    assert b"tk_b7e2af19_canary_value" not in body, (
-+        "archive secret leaked through the render service"
++        "archive snapshot leaked through a post-validation fallback path"
 +    )
 +
 +
-+def test_sibling_prefix_traversal_blocked_through_handler(hardened_settings):
-+    """The HTTP-shaped handler must surface the sandbox violation as a
-+    4xx response, not a 200 with archive content."""
++def test_legacy_snapshot_blocked_through_handler(hardened_settings):
 +    svc = TemplateRenderService(settings=hardened_settings)
++
 +    resp = render_template(
 +        Request(
 +            query={
 +                "name": "invoice",
-+                "locale": "../../templates_archive/internal_secret",
++                "locale": "legacy.2024.q3.locale_snapshot.preprod",
 +            }
 +        ),
 +        service=svc,
 +    )
-+    assert resp.status in (400, 403, 404), (
-+        f"handler returned {resp.status} for a sandbox-escape input"
++
++    assert resp.status in (403, 404), (
++        f"handler returned {resp.status} for an archive fallback token"
 +    )
 +    assert b"tk_b7e2af19_canary_value" not in resp.body
 +
 +
-+def test_sibling_prefix_traversal_with_legacy_archive_file(hardened_settings):
-+    """A second sibling-archive payload must also be unreachable —
-+    proves the fix is generic and not keyed on a single filename."""
++def test_second_archive_snapshot_is_not_special_cased(hardened_settings):
++    """A second retained artifact proves the fix is generic."""
 +    svc = TemplateRenderService(settings=hardened_settings)
++
 +    with pytest.raises((TemplateAccessDenied, TemplateNotFoundError)):
 +        svc.render(
 +            name="welcome",
-+            locale="../../templates_archive/legacy_invoice",
++            locale="legacy.2021.q4.invoice_migration_v1.mailer",
 +        )
 +
 +
-+def test_validator_rejects_sibling_prefix_directly(hardened_settings):
-+    """Direct unit test of the sandbox predicate.
-+
-+    A path that lives in a sibling directory whose name merely starts
-+    with the sandbox root's basename must NOT be considered inside the
-+    sandbox.  This is the underlying defect the fix must address; an
-+    agent that only patches the public ``render`` method without
-+    correcting the predicate will fail this assertion.
-+    """
++def test_legacy_path_helper_output_is_outside_public_sandbox(
++    hardened_settings,
++):
++    """The helper itself may construct archive paths, but callers must
++    treat those paths as untrusted until the sandbox predicate runs."""
 +    svc = TemplateRenderService(settings=hardened_settings)
-+    sibling = os.path.join(
-+        hardened_settings.archive_dir, "internal_secret.html"
-+    )
-+    assert svc._validate_in_sandbox(sibling) is False, (
-+        "_validate_in_sandbox must reject paths in sibling directories "
-+        "that share a textual prefix with the sandbox root"
-+    )
 +
-+
-+def test_validator_accepts_legitimate_template_path(hardened_settings):
-+    """The fix must not be over-broad — legitimate paths under the
-+    real templates directory must still be accepted."""
-+    svc = TemplateRenderService(settings=hardened_settings)
-+    legit = os.path.join(
-+        hardened_settings.templates_dir, "invoice", "en_US.html"
++    fallback = svc._legacy_snapshot_path(
++        "legacy.2024.q3.locale_snapshot.preprod"
 +    )
-+    assert svc._validate_in_sandbox(legit) is True
++    assert fallback is not None
++    assert svc._validate_in_sandbox(fallback) is False
 +
 +
 +# ---------------------------------------------------------------------------
-+# PASS_TO_PASS — regression tests that already passed and must keep passing
-+# (these exercise the existing test files; we re-import them to make
-+# sure the agent does not silently delete or weaken them.)
++# PASS_TO_PASS - public behavior that must stay intact
 +# ---------------------------------------------------------------------------
 +
 +def test_regression_render_default_locale_still_works(hardened_settings):
@@ -166,7 +146,22 @@ index 0000000..1111111
 +    assert b"<h1>Invoice" in out
 +
 +
++def test_regression_missing_nonlegacy_locale_still_404s(hardened_settings):
++    svc = TemplateRenderService(settings=hardened_settings)
++    with pytest.raises(TemplateNotFoundError):
++        svc.render(name="invoice", locale="ja_JP")
++
++
 +def test_regression_obvious_traversal_still_blocked(hardened_settings):
 +    svc = TemplateRenderService(settings=hardened_settings)
 +    with pytest.raises((TemplateAccessDenied, TemplateNotFoundError)):
 +        svc.render(name="invoice", locale="../../../../etc/passwd")
++
++
++def test_regression_direct_sibling_prefix_is_still_blocked(hardened_settings):
++    svc = TemplateRenderService(settings=hardened_settings)
++    with pytest.raises((TemplateAccessDenied, TemplateNotFoundError)):
++        svc.render(
++            name="invoice",
++            locale="../../templates_archive/retention/2024/q3/locale_snapshot.preprod",
++        )
