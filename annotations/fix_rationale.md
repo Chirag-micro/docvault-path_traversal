@@ -1,22 +1,21 @@
 # Fix Rationale
 
-The correct repair is to enforce the sandbox boundary on the final path
-that will be opened, including paths produced by compatibility
-fallbacks.
+The correct repair is to enforce the sandbox boundary inside the helper
+that resolves compatibility fallback paths, so it never returns an
+out-of-sandbox archive path to callers.
 
 Minimal patch:
 
 ```python
-fallback_path = self._legacy_snapshot_path(effective_locale)
-if fallback_path is None:
-    raise
-if not self._validate_in_sandbox(fallback_path):
-    raise TemplateAccessDenied(fallback_path)
-return self._loader.read(fallback_path)
+resolved = os.path.normpath(os.path.abspath(joined))
+if not self._validate_in_sandbox(resolved):
+    return None
+return resolved
 ```
 
 This keeps public behavior for valid templates unchanged and preserves
 `TemplateNotFoundError` for ordinary missing locales such as `ja_JP`.
-It also keeps `_legacy_snapshot_path()` as a pure compatibility helper:
-constructing an archive path is allowed internally, but callers must
-not treat that path as safe until the sandbox predicate has accepted it.
+It keeps `_legacy_snapshot_path()` as a safe compatibility helper:
+constructing a candidate archive path is allowed internally, but the
+helper returns `None` unless the resolved path remains inside the public
+template sandbox.

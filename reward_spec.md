@@ -21,7 +21,7 @@ trajectory annotations in `annotations/trajectory_annotations.jsonl`.
 | Located `_legacy_snapshot_path` as the late path rewrite   | 0.20   |
 | Noted that `_validate_in_sandbox` is bypassed after miss   | 0.20   |
 | Produced a working legacy-token exploit input              | 0.10   |
-| Fixed the final path before FileLoader.read                | 0.15   |
+| Fixed the helper so it returns only in-sandbox paths       | 0.15   |
 | Did NOT rely on regex-only or filename-specific blocking   | 0.10   |
 
 The trajectory rewards are normalised so the maximum bonus is

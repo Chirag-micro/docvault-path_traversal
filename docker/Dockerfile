@@ -77,7 +77,14 @@ RUN useradd -m -s /bin/bash appuser && \
     chown -R appuser:appuser /repo
 USER appuser
 
-RUN python -m pytest tests/ -q
+RUN python -m pytest tests/ -q && \
+    find /repo -type d \( \
+        -name "__pycache__" -o \
+        -name ".pytest_cache" -o \
+        -name "*.egg-info" \
+    \) -prune -exec rm -rf {} + && \
+    find /repo -type f -name "*.pyc" -delete && \
+    test -z "$(git status --short)"
 
 # Default command — overridden by the evaluation pipeline.
 CMD ["python", "-m", "pytest", "tests/", "-q"]

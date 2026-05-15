@@ -47,12 +47,14 @@ Flow:
 FIX
 ===
 
-Validate every path immediately before it can be read. The minimal fix
-is to apply _validate_in_sandbox() to fallback_path before passing it to
-FileLoader.read():
+Validate the final resolved path inside the helper that constructs it,
+so _legacy_snapshot_path() never returns a path outside the public
+template sandbox:
 
-    if not self._validate_in_sandbox(fallback_path):
-        raise TemplateAccessDenied(fallback_path)
+    resolved = os.path.normpath(os.path.abspath(joined))
+    if not self._validate_in_sandbox(resolved):
+        return None
+    return resolved
 
 This preserves valid template behavior, keeps missing non-legacy
 locales as TemplateNotFoundError, and blocks archive reads through the
