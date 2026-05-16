@@ -84,7 +84,9 @@ RUN python -m pytest tests/ -q && \
         -name "*.egg-info" \
     \) -prune -exec rm -rf {} + && \
     find /repo -type f -name "*.pyc" -delete && \
-    test -z "$(git status --short)"
+    test -z "$(git status --short)" && \
+    test "$(git rev-list --all --count)" = "1" && \
+    test -z "$(git remote -v)"
 
 # Default command — overridden by the evaluation pipeline.
 CMD ["python", "-m", "pytest", "tests/", "-q"]
