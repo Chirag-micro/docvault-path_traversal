@@ -27,11 +27,26 @@ from pathlib import Path
 from typing import Iterable
 
 
-REPO_ROOT = Path("/repo")
+DEFAULT_REPO_ROOT = Path("/repo")
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "task_config.json"
 
 
-def _run(cmd: Iterable[str], cwd: Path = REPO_ROOT) -> subprocess.CompletedProcess:
+def _repo_root() -> Path:
+    cfg = json.loads(CONFIG_PATH.read_text())
+    configured = Path(cfg.get("repo", {}).get("repo_dir", DEFAULT_REPO_ROOT))
+    if configured.exists():
+        return configured
+
+    local_repo = CONFIG_PATH.parent / "repo"
+    if local_repo.exists():
+        return local_repo
+
+    return Path.cwd()
+
+
+def _run(cmd: Iterable[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+    if cwd is None:
+        cwd = _repo_root()
     return subprocess.run(
         list(cmd),
         cwd=str(cwd),
@@ -41,27 +56,41 @@ def _run(cmd: Iterable[str], cwd: Path = REPO_ROOT) -> subprocess.CompletedProce
     )
 
 
+def _ensure_git_repo(repo_root: Path) -> None:
+    if (repo_root / ".git").exists():
+        return
+
+    _run(["git", "init", "-q"], cwd=repo_root)
+    _run(["git", "checkout", "-q", "-b", "main"], cwd=repo_root)
+    _run(["git", "config", "user.email", "grader@example.invalid"], cwd=repo_root)
+    _run(["git", "config", "user.name", "Grader"], cwd=repo_root)
+    _run(["git", "add", "-A"], cwd=repo_root)
+    _run(["git", "commit", "-q", "-m", "Initial commit"], cwd=repo_root)
+
+
 def grade(candidate_patch_path: str) -> dict:
     cfg = json.loads(CONFIG_PATH.read_text())
+    repo_root = _repo_root()
+    _ensure_git_repo(repo_root)
     f2p = cfg["FAIL_TO_PASS"]
     p2p = cfg["PASS_TO_PASS"]
 
     # 1. Apply candidate
-    apply = _run(["git", "apply", "--check", candidate_patch_path])
+    apply = _run(["git", "apply", "--check", candidate_patch_path], cwd=repo_root)
     if apply.returncode != 0:
         return {
             "status": "rejected",
             "reason": "candidate_patch_does_not_apply",
             "stderr": apply.stderr,
         }
-    _run(["git", "apply", candidate_patch_path])
+    _run(["git", "apply", candidate_patch_path], cwd=repo_root)
 
     # 2. Apply hidden test patch
     test_patch = str(Path(__file__).resolve().parent.parent / "test_patch.diff")
-    _run(["git", "apply", test_patch])
+    _run(["git", "apply", test_patch], cwd=repo_root)
 
     # 3. Run the configured test command
-    test_run = _run(cfg["test_cmd"].split())
+    test_run = _run(cfg["test_cmd"].split(), cwd=repo_root)
 
     # Parse pytest output for which tests passed.
     passed = {

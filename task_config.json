@@ -4,7 +4,7 @@
   "task_type": "vulnerability_remediation",
   "repo": {
     "source_url": "https://github.com/Chirag-micro/docvault-path_traversal",
-    "base_commit": "a329c1ef0858758265cdbfaefcdfbfdcbdc06a9c",
+    "base_commit": "2ac9eae12093857bdaf3fbcbbece9a13758c8460",
     "image_name": "micro1ai/path_traversal_002:v1",
     "repo_dir": "/repo",
     "language": "python"
